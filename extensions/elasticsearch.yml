@@ -1,0 +1,7 @@
+apiVersion: extensions/v1beta1
+kind: ThirdPartyResource
+description: "A specification of an Elastic Search Cluster to manage"
+metadata:
+  name: "elasticsearch.ibawt.ca"
+versions:
+  - name: v1

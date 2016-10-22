@@ -1,0 +1,8 @@
+apiVersion: "ibawt.ca/v1"
+kind: "Elasticsearch"
+metadata:
+  name: "small-es-instance"
+spec:
+  dataNodes: 3
+  clientNodes: 2
+  masterNodes: 3

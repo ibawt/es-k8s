@@ -1,0 +1,232 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elasticsearch
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-client
+  labels:
+    name: es-client
+spec:
+  ports:
+  - port: 9200
+    targetPort: 9200
+  selector:
+    name: es-client
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: es-client
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      name: es-client
+  template:
+    metadata:
+      labels:
+        name: es-client
+    spec:
+      serviceAccount: elasticsearch
+      containers:
+      - name: es-client
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+              - IPC_LOCK
+        image: registry.chi2.shopify.io/elasticsearch-borg:bd4fe95dea3861101f4f90087caffc36289d602e
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9200
+          initialDelaySeconds: 120
+          timeoutSeconds: 900
+        env:
+        - name: RUN_AS_ROOT
+          value: "1"
+        - name: BORG
+          value: "1"
+        - name: SERVICE_INDEX
+          value: "1"
+        - name: LOCATION
+          value: cloud1
+        - name: ENV
+          value: production
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: "CLUSTER_NAME"
+          value: "shopify"
+        - name: NODE_MASTER
+          value: "false"
+        - name: NODE_DATA
+          value: "false"
+        - name: HTTP_ENABLE
+          value: "true"
+        ports:
+        - containerPort: 9200
+          name: http
+          protocol: TCP
+        - containerPort: 9300
+          name: transport
+          protocol: TCP
+        volumeMounts:
+        - mountPath: /data
+          name: storage
+      volumes:
+          - emptyDir: {}
+            name: storage
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: es-master
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      name: es-master
+  template:
+    metadata:
+      labels:
+        name: es-master
+    spec:
+      serviceAccount: elasticsearch
+      containers:
+      - name: es-master
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+              - IPC_LOCK
+        image: registry.chi2.shopify.io/elasticsearch-borg:bd4fe95dea3861101f4f90087caffc36289d602e
+        livenessProbe:
+          tcpSocket:
+            port: 9300
+          initialDelaySeconds: 10
+          timeoutSeconds: 90
+        env:
+        - name: RUN_AS_ROOT
+          value: "1"
+        - name: BORG
+          value: "1"
+        - name: SERVICE_INDEX
+          value: "1"
+        - name: LOCATION
+          value: cloud1
+        - name: ENV
+          value: production
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLUSTER_NAME
+          value: "shopify"
+        - name: NODE_MASTER
+          value: "true"
+        - name: NODE_DATA
+          value: "false"
+        - name: HTTP_ENABLE
+          value: "false"
+        ports:
+        - containerPort: 9300
+          name: transport
+        volumeMounts:
+        - mountPath: /data
+          name: storage
+      volumes:
+          - emptyDir: {}
+            name: storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-discovery
+  labels:
+    component: elasticsearch
+    role: master
+spec:
+  selector:
+    name: es-master
+  ports:
+  - name: transport
+    port: 9300
+    targetPort: 9300
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: es-data
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      name: es-data
+  template:
+    metadata:
+      labels:
+        name: es-data
+    spec:
+      serviceAccount: elasticsearch
+      containers:
+      - name: es-data
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+              - IPC_LOCK
+        image: registry.chi2.shopify.io/elasticsearch-borg:bd4fe95dea3861101f4f90087caffc36289d602e
+        livenessProbe:
+          tcpSocket:
+            port: 9300
+          initialDelaySeconds: 10
+          timeoutSeconds: 90
+        env:
+        - name: RUN_AS_ROOT
+          value: "1"
+        - name: BORG
+          value: "1"
+        - name: SERVICE_INDEX
+          value: "1"
+        - name: LOCATION
+          value: cloud1
+        - name: ENV
+          value: production
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLUSTER_NAME
+          value: "shopify"
+        - name: NODE_MASTER
+          value: "false"
+        - name: NODE_DATA
+          value: "true"
+        - name: HTTP_ENABLE
+          value: "false"
+        ports:
+        - containerPort: 9300
+          name: transport
+        volumeMounts:
+        - mountPath: /data
+          name: storage
+      volumes:
+          - emptyDir: {}
+            name: storage
