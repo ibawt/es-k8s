@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: es-k8s
+spec:
+  containers:
+  - name: es-k8s
+    image: gcr.io/shopify-core-alpha-1239/es-k8s
+    imagePullPolicy: Always

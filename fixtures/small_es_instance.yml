@@ -1,7 +1,7 @@
-apiVersion: "ibawt.ca/v1"
-kind: "Elasticsearch"
+apiVersion: ibawt.ca/v1
+kind: Elasticsearch
 metadata:
-  name: "small-es-instance"
+  name: small-es-instance
 spec:
   dataNodes: 3
   clientNodes: 2
