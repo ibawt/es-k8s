@@ -80,31 +80,29 @@ func watchWithDynamicThingy() {
 	resource := unversioned.APIResource{Name: "elasticsearch", Namespaced: true}
 	foo, err := client.Resource(&resource, "default").List(&v1.ListOptions{})
 	log.WithError(err).WithField("foo", foo).Warn("output")
-
 }
 
 func watchWithClient() {
 	config := createConfig()
-
 	config.GroupVersion = &unversioned.GroupVersion{Group: "ibawt.ca", Version: "v1"}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.WithError(err).Warn("NewForConfig")
 	}
-	b, err := clientset.Core().GetRESTClient().Get().Resource("elasticsearch").Do().Raw()
 
+	watch, err := clientset.Core().GetRESTClient().Get().Resource("elasticsearch").Watch()
 	if err != nil {
 		log.WithError(err).Warn("Get()")
+		return
 	}
-	log.WithField("bytes", string(b)).Warn("output")
-	// watchChan := watch.ResultChan()
+	watchChan := watch.ResultChan()
 
-	// for {
-	//	select {
-	//	case evt := <-watchChan:
-	//		log.WithField("event", evt).Info("returned from watch")
-	//	}
-	// }
+	for {
+		select {
+		case evt := <-watchChan:
+			log.WithField("event", evt).Info("returned from watch")
+		}
+	}
 }
 
 func watchEvents() {
@@ -157,8 +155,10 @@ func main() {
 	log.SetLevel(log.DebugLevel)
 	signalChan := make(chan os.Signal)
 
-	//go watchEvents()
-	go watchWithDynamicThingy()
+	// watchEvents()
+	watchWithDynamicThingy()
+	watchWithClient()
+
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
 	<-signalChan
 	os.Exit(0)
