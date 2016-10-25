@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -10,9 +12,14 @@ import (
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/pkg/api"
+	"k8s.io/client-go/pkg/api/errors"
 	"k8s.io/client-go/pkg/api/unversioned"
 	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/client-go/pkg/fields"
+	"k8s.io/client-go/pkg/runtime"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
 	log "github.com/Sirupsen/logrus"
@@ -54,21 +61,111 @@ type ElasticSearchList struct {
 
 const defaultTimeout = 5 * time.Second
 
-func createOrModifyDeployment(evt ElasticSearchEvent) error {
+var client *kubernetes.Clientset
+
+func getClient() *kubernetes.Clientset {
+	if client == nil {
+		client = kubernetes.NewForConfigOrDie(createConfig())
+	}
+	return client
+}
+
+func createServiceAccount() error {
+	log.Info("creating service account")
+	c := getClient()
+
+	svcAcct, err := c.Core().ServiceAccounts(api.NamespaceDefault).Get("elasticsearch")
+	if err != nil && !errors.IsNotFound(err) {
+		// ignore NotFound
+		return err
+	} else if err == nil {
+		// ServiceAccount already exists
+		return nil
+	}
+
+	svcAcct = &v1.ServiceAccount{}
+	svcAcct.ObjectMeta.SetName("elasticsearch")
+	svcAcct, err = c.Core().ServiceAccounts(api.NamespaceDefault).Create(svcAcct)
+	if err != nil {
+		return err
+	}
+	log.WithField("ServiceAccount", svcAcct).Info("Created ServiceAccount")
 	return nil
+}
+
+func createService() error {
+	log.Info("Creating Service")
+	c := getClient()
+
+	service, err := c.Core().Services(api.NamespaceDefault).Get("elasticsearch")
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	} else if err == nil {
+		return nil
+	}
+
+	service = &v1.Service{}
+	service.ObjectMeta.SetName("elasticsearch")
+	service.ObjectMeta.Labels()
 }
 
 func createConfig() *rest.Config {
 	config, err := clientcmd.BuildConfigFromFlags("", "/Users/ian/.kube/config")
 	if err != nil {
-		log.WithError(err).Warn("building client config")
+		log.WithError(err).Fatal("building client config")
 	}
 	return config
 }
 
+func (e *ElasticSearchEvent) SetGroupVersionKind(kind unversioned.GroupVersionKind) {
+	panic("wtf")
+}
+
+func (e *ElasticSearchEvent) GroupVersionKind() unversioned.GroupVersionKind {
+	panic("do I get here?")
+	return unversioned.FromAPIVersionAndKind("ibawt.ca", "ElasticSearch")
+}
+
+func (e *ElasticSearchEvent) GetObjectKind() unversioned.ObjectKind {
+	panic("how about here?")
+	return e
+}
+
+func controllerThingy() {
+	config := createConfig()
+	config.GroupVersion = &unversioned.GroupVersion{Group: "ibawt.ca", Version: "v1"}
+	config.APIPath = "/apis"
+	// clientset := kubernetes.NewForConfigOrDie(config)
+	// config.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: api.Codecs}
+
+	client, _ := rest.RESTClientFor(config)
+
+	// foo, err := client.Get().Namespace(api.NamespaceAll).
+	//	Resource("elasticsearchs").Do().Get()
+
+	// log.WithField("err", err).WithField("foo", foo).Info("raw rest")
+
+	source := cache.NewListWatchFromClient(client, "elasticsearchs", api.NamespaceAll, fields.Everything())
+	handler := func(obj interface{}) {
+		log.Warn(obj)
+	}
+
+	store, c := cache.NewInformer(
+		source,
+		&runtime.Unknown{},
+		30*time.Second,
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    handler,
+			DeleteFunc: handler,
+		})
+
+	stop := make(chan struct{})
+	c.Run(stop)
+	log.Warn(store, c)
+}
 func watchWithDynamicThingy() {
 	config := createConfig()
-
+	config.APIPath = "/apis"
 	gv := unversioned.GroupVersion{Group: "ibawt.ca", Version: "v1"}
 	config.GroupVersion = &gv
 
@@ -77,20 +174,21 @@ func watchWithDynamicThingy() {
 		log.WithError(err).Warn("dynamic client")
 	}
 	log.WithField("client", client).Info("dynamic")
-	resource := unversioned.APIResource{Name: "elasticsearch", Namespaced: true}
-	foo, err := client.Resource(&resource, "default").List(&v1.ListOptions{})
-	log.WithError(err).WithField("foo", foo).Warn("output")
+	resource := unversioned.APIResource{Name: "elasticsearchs", Namespaced: false}
+	foo, err := client.Resource(&resource, "").List(&v1.ListOptions{})
+	log.WithError(err).WithField("foo", foo).Warnf("output %#v", foo)
 }
 
 func watchWithClient() {
 	config := createConfig()
 	config.GroupVersion = &unversioned.GroupVersion{Group: "ibawt.ca", Version: "v1"}
+	config.APIPath = "/apis"
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.WithError(err).Warn("NewForConfig")
 	}
 
-	watch, err := clientset.Core().GetRESTClient().Get().Resource("elasticsearch").Watch()
+	watch, err := clientset.Core().GetRESTClient().Get().Resource("elasticsearchs").Watch()
 	if err != nil {
 		log.WithError(err).Warn("Get()")
 		return
@@ -103,6 +201,28 @@ func watchWithClient() {
 			log.WithField("event", evt).Info("returned from watch")
 		}
 	}
+}
+
+func listInstances() ([]ElasticSearch, error) {
+	endPoint := apiHost + resourceEndpoint
+
+	resp, err := http.Get(endPoint)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Invalid return status code: %d", resp.StatusCode)
+	}
+
+	var list ElasticSearchList
+	decoder := json.NewDecoder(resp.Body)
+
+	if err = decoder.Decode(&list); err != nil {
+		return nil, err
+	}
+
+	return list.Items, nil
 }
 
 func watchEvents() {
@@ -137,6 +257,11 @@ func watchEvents() {
 				log.WithField("event", event).Info("Processing event!")
 				// handle event
 				switch event.Type {
+				case "ADDED":
+					err = createOrModifyDeployment(event)
+					if err != nil {
+						log.WithError(err).Warn("createOrModifyDeployment")
+					}
 				case "MODIFIED":
 					err = createOrModifyDeployment(event)
 					if err != nil {
@@ -151,14 +276,11 @@ func watchEvents() {
 }
 
 func main() {
+	flag.Parse()
 	log.Info("es-k8s starting...")
 	log.SetLevel(log.DebugLevel)
+	go watchEvents()
 	signalChan := make(chan os.Signal)
-
-	// watchEvents()
-	watchWithDynamicThingy()
-	watchWithClient()
-
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
 	<-signalChan
 	os.Exit(0)
