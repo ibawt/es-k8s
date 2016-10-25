@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/json"
+	j "encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -16,8 +16,10 @@ import (
 	"k8s.io/client-go/pkg/api/errors"
 	"k8s.io/client-go/pkg/api/unversioned"
 	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/client-go/pkg/apis/extensions/v1beta1"
 	"k8s.io/client-go/pkg/fields"
 	"k8s.io/client-go/pkg/runtime"
+	"k8s.io/client-go/pkg/util/intstr"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -106,7 +108,91 @@ func createService() error {
 
 	service = &v1.Service{}
 	service.ObjectMeta.SetName("elasticsearch")
-	service.ObjectMeta.Labels()
+	service.ObjectMeta.Labels = map[string]string{"name": "elasticsearch"}
+	service.Spec.Ports = []v1.ServicePort{{Port: 9200, TargetPort: intstr.FromInt(9200)}}
+	service.Spec.Selector = map[string]string{"name": "es-client"}
+
+	service, err = c.Core().Services(api.NamespaceDefault).Create(service)
+	if err != nil {
+		return err
+	}
+	log.WithField("Service", service).Info("Created service")
+	return nil
+}
+
+// func testDeserialization() error {
+//	e := json.NewYAMLSerializer(json.DefaultMetaFactory, nil, nil)
+//	e.Decode(originalData []byte, gvk *unversioned.GroupVersionKind, into runtime.Object)
+// }
+
+func createDeployments() error {
+	log.Info("Creating Deployments...")
+	c := getClient()
+
+	clientDeployment, err := c.Extensions().Deployments(api.NamespaceDefault).Get("es-client")
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	} else if err == nil {
+		log.Info("es-client Deployment already made")
+		return nil
+	}
+
+	clientDeployment = &v1beta1.Deployment{}
+	clientDeployment.Name = "es-client"
+	clientDeployment.ObjectMeta.SetName("es-client")
+	clientDeployment.Spec.Selector = &v1beta1.LabelSelector{
+		MatchLabels: map[string]string{"name": "es-client"},
+	}
+	var replicas int32 = 3
+	clientDeployment.Spec.Replicas = &replicas
+	clientDeployment.Spec.Template.ObjectMeta.SetName("es-client")
+
+	podSpec := &clientDeployment.Spec.Template.Spec
+	podSpec.ServiceAccountName = "elasticsearch"
+	container := v1.Container{}
+	container.Name = "es-client"
+	priv := true
+	container.SecurityContext = &v1.SecurityContext{
+		Privileged: &priv,
+	}
+	container.SecurityContext.Capabilities = &v1.Capabilities{
+		Add: []v1.Capability{"IPC_LOCK"},
+	}
+	container.Image = "elasticsearch"
+	container.LivenessProbe = &v1.Probe{Handler: v1.Handler{HTTPGet: &v1.HTTPGetAction{
+		Path: "/",
+		Port: intstr.FromInt(9200),
+	}}}
+	container.Env = []v1.EnvVar{
+		{Name: "NAMESPACE", ValueFrom: &v1.EnvVarSource{
+			FieldRef: &v1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+		}},
+		{Name: "CLUSTER_NAME", Value: "shopify"},
+		{Name: "NODE_MASTER", Value: "false"},
+		{Name: "NODE_DATA", Value: "false"},
+		{Name: "HTTP_ENABLE", Value: "true"},
+	}
+	container.Ports = []v1.ContainerPort{
+		{Name: "http", ContainerPort: 9200},
+		{Name: "transport", ContainerPort: 9300},
+	}
+	container.VolumeMounts = []v1.VolumeMount{
+		{MountPath: "/data", Name: "storage"},
+	}
+	podSpec.Containers = []v1.Container{container}
+	podSpec.Volumes = []v1.Volume{
+		{Name: "storage", VolumeSource: v1.VolumeSource{EmptyDir: &v1.EmptyDirVolumeSource{}}},
+	}
+
+	log.Info("about to create deployment")
+	clientDeployment, err = c.Extensions().Deployments(api.NamespaceDefault).Create(clientDeployment)
+	if err != nil {
+		return err
+	}
+
+	log.WithField("clientDeployment", clientDeployment).Info("Made es client deployment")
+
+	return nil
 }
 
 func createConfig() *rest.Config {
@@ -216,7 +302,7 @@ func listInstances() ([]ElasticSearch, error) {
 	}
 
 	var list ElasticSearchList
-	decoder := json.NewDecoder(resp.Body)
+	decoder := j.NewDecoder(resp.Body)
 
 	if err = decoder.Decode(&list); err != nil {
 		return nil, err
@@ -240,7 +326,7 @@ func watchEvents() {
 		if err != nil || resp.StatusCode != http.StatusOK {
 			time.Sleep(5 * time.Second)
 		} else {
-			decoder := json.NewDecoder(resp.Body)
+			decoder := j.NewDecoder(resp.Body)
 			// keep decoding events
 			for {
 				var event ElasticSearchEvent
@@ -258,15 +344,15 @@ func watchEvents() {
 				// handle event
 				switch event.Type {
 				case "ADDED":
-					err = createOrModifyDeployment(event)
-					if err != nil {
-						log.WithError(err).Warn("createOrModifyDeployment")
-					}
+					// err = createOrModifyDeployment()
+					// if err != nil {
+					//	log.WithError(err).Warn("createOrModifyDeployment")
+					// }
 				case "MODIFIED":
-					err = createOrModifyDeployment(event)
-					if err != nil {
-						log.WithError(err).Warn("createOrModifyDeployment")
-					}
+					// err = createOrModifyDeployment()
+					// if err != nil {
+					//	log.WithError(err).Warn("createOrModifyDeployment")
+					// }
 				default:
 					log.WithField("Type", event.Type).Warn("Not handled!")
 				}
@@ -279,7 +365,10 @@ func main() {
 	flag.Parse()
 	log.Info("es-k8s starting...")
 	log.SetLevel(log.DebugLevel)
-	go watchEvents()
+	createServiceAccount()
+	createService()
+	createDeployments()
+	// go watchEvents()
 	signalChan := make(chan os.Signal)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
 	<-signalChan
